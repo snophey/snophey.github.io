@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Compiling a program that uses native libraries with GraalVM"
+title:  "Using JNI in a GraalVM native binary"
 date:   2024-01-21 10:50:03 +0100
 categories: graalvm serverless java quarkus gcp 
 ---
@@ -13,7 +13,8 @@ This is due to all the optimizations that GraalVM does under the hood, which can
 A lot of these issues are discussed and documented in this [Quarkus tutorial](https://quarkus.io/guides/writing-native-applications-tips).
 
 In this post, we will look at a case that is not covered by the aforementioned article, namely the case where your Java application relies
-on some native libraries that are called via JNI.
+on some native C++ libraries that are called via Java Native Interface (JNI).
+We will briefly look at what I was trying to achieve, and then we will go through the steps and look at some errors that came up along the way, with the goal of understanding how to solve them.
 
 ## The problem
 
@@ -37,7 +38,7 @@ I have opted to use [Quarkus](https://quarkus.io/) as my framework of choice, si
 documentation for GraalVM and native compilation.
 However, as I later found out, there are some caveats when compiling an application that uses JNI to call native libraries.
 
-## Stumbling towards a solution
+## Getting it to work
 
 On the surface, compiling a Quarkus application with GraalVM is very straightforward. We install a GraalVM distribution with sdkman,
 point our `GRAALVM_HOME` environment variable to it, and then trigger the actual build process:
@@ -108,7 +109,7 @@ This is already encouraging, because we do use JNI to call the OR-Tools library.
         4 native libraries: dl, pthread, rt, z
 ```
 
-Once the build has finished, we are ready to stumble upon the next issue.
+Once the build has finished, we are ready to face the next issue.
 
 ### Missing native libraries
 
@@ -140,7 +141,7 @@ java.lang.NoClassDefFoundError: com/google/ortools/linearsolver/MPVariable
         at org.graalvm.nativeimage.builder/com.oracle.svm.core.jni.functions.JNIFunctions.FindClass(JNIFunctions.java:359)
 ```
 
-At this point, we are really scratching our heads. Our application code clearly makes use of this `MPVariable` class, so why is it not found?
+This issue proved to be a tougher nut to crack. Our application code clearly makes use of this `MPVariable` class, so why is it not found?
 The Quarkus documentation is of no help here, so we have nothing left to do but to try and understand what GraalVM does under the hood
 in order to get an idea of where the problem might be.
 
@@ -148,7 +149,7 @@ Looking into the GraalVM documentation, we find a key bit on information in a [s
 
 > The `native-image` builder must know beforehand which items will be looked up in case they might not be reachable otherwise and therefore would not be included in a native image. Moreover, native-image must generate call wrapper code ahead-of-time for any method that can be called via JNI. Therefore, specifying a concise list of items that need to be accessible via JNI guarantees their availability and allows for a smaller footprint.
 
-So to guarantee that a class is available at runtime, instead of relying on GraalVM to detect it during the analysis phase, we need to explicitly specify it. We could do this by writing a `jni-config.json` file, where we include the classes and methods that we will require
+So, to guarantee that a class is available at runtime, instead of relying on GraalVM to detect it during the analysis phase, we need to explicitly specify it. We could do this by writing a `jni-config.json` file, where we include the classes and methods that we will require
 at runtime, but this is a tedious and error prone process. Luckily, there is a better way: we can use GraalVM's [tracing agent](https://www.graalvm.org/latest/reference-manual/native-image/metadata/AutomaticMetadataCollection/#tracing-agent)
 to automatically discover the classes that are required at runtime and have it generate the `jni-config.json` file for us.
 
@@ -174,7 +175,7 @@ In it, we find a mention of the precise class we were missing earlier:
 ...
 ```
 
-With this metadata file in hand, all that is left to do is to point GraalVM to it during the build process, so we update
+With this metadata file in hand, all that is left to do is to point GraalVM to it during the build process. So we update
 the `quarkus.native.additional-build-args` property in our `application.properties` file:
 
 ```
